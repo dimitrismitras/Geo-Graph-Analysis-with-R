@@ -1,0 +1,453 @@
+---
+title: "EDAV-HW2"
+author: "aid24005"
+date: "2023-12-08"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE, fig.width = 10, fig.height = 8)
+```
+
+<h2>Graph Analysis with R. Part B</h2>
+
+
+<h3>Description</h3>
+In this project, we were provided with a raster file (.tif) containing elevation data for the Mediterranean, along with three shape files containing information about capitals, states, and places in Greece. The project involves various geocomputations using these files, and new data will be added to create additional interesting maps by the end. 
+
+<h3> Add libraries </h3>
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+library(sf)
+library(terra)
+library(dplyr)
+library(spData)
+library(raster)
+library (ggplot2)
+library(ggrepel)
+library(dplyr)
+library(stringr)
+
+
+```
+
+<h3> Read and plot raster and vector files </h3>
+```{r}
+#raster data
+file_path <- "myrast.tif"
+raster_data <- raster(file_path)
+print(raster_data)
+```
+```{r}
+plot(raster_data, main = "Mediterranean map")
+```
+
+
+```{r}
+#shape data
+poleis = st_read("poleis/poleis.shp")
+places = st_read("places/places.shp")
+nomoi = st_read("GRC_ADM2/GRC_ADM2.shp")
+
+
+```
+
+<h3>Raster Cropping Greece </h3>
+```{r message=FALSE, warning=FALSE}
+###1
+places <- st_transform(places, crs(raster_data)) #From Geocomputation with R ,6.2 Raster cropping
+
+greece_geometry <- st_union(places$geometry) #Compute Greece Geometry from union its states
+
+greece_raster <- crop(raster_data, st_bbox(greece_geometry)) #Crop Greece from initial raster
+
+plot(greece_raster, main= "Greece map")
+```
+
+<h3>Elevation of states capitals </h3> 
+A map of the regions of Greece, where the size of each point corresponding to each capital is proportional to the elevation of that capital. The graph on the left represents each state's capital, and on the right, the size of the circle for each capital depends on its elevation
+```{r}
+###2
+
+#compute capitals altitude
+poleis <- st_transform(poleis, crs(greece_raster))
+poleis$altitude<- extract(greece_raster , poleis) #capitals altitude
+
+#create map with states and state's capitals 
+par(mfrow = c(1, 2)) #2 plots
+cex = sqrt(poleis$altitude)/10
+plot(nomoi["NAME"] , reset = FALSE, main = "Capitals of states")
+plot(st_geometry(poleis), add = TRUE) 
+
+plot(nomoi["NAME"] , reset = FALSE, ,main="Elevation of capitals") 
+plot(st_geometry(poleis), add = TRUE , cex=cex) #The biger the circle is, the maximum altitude it has
+
+par(mfrow = c(1, 1))
+```
+
+
+<h3> Mean elevation for states </h3>
+```{r}
+###3
+altitude_nomoi<-extract(raster_data, nomoi) #Computes elevations for all the state 
+nomoi$mean_altitude <- sapply(altitude_nomoi, mean, na.rm = TRUE) #mean
+nomoi$sd_altitude <- sapply(altitude_nomoi, sd, na.rm = TRUE) #standart deviation
+```
+
+```{r}
+plot(nomoi[9], main = "Nomoi - mean_elevation")
+```
+
+
+<h3> Standard Deviation for the elevation of states </h3>
+```{r}
+plot(nomoi[10], main= "Nomoi - standard_deviation_elevation")
+```
+<h3> The absolute value of the difference between the mean elevation of the state and the elevation of its capital </h3>
+In this step, it is necessary to create a new data frame combining features from both 'nomoi' and 'poleis'. Then, compute the difference between capitals and states and represent them in an improved plot.
+```{r message=FALSE, warning=FALSE}
+###4
+# Fix invalid geometries
+nomoi <- st_make_valid(nomoi)
+poleis <- st_make_valid(poleis)
+
+#intersection of poleis, nomoi
+intersection_nomoi_capitals <- st_intersection(poleis, nomoi) 
+
+#join it with poleis to add poleis$altitude
+nomoi_capitals_pairs <- st_join(intersection_nomoi_capitals, poleis) 
+
+# Calculate the absolute difference
+merged <- nomoi_capitals_pairs %>%
+  mutate(difference = abs(mean_altitude- altitude.x))
+
+#Convert as sf object
+sf_merged <- st_as_sf(merged)
+
+#join with nomoi, so it is easier to plot colored nomoi geometry
+plot_nomoi <- st_join(nomoi, merged)
+
+# Plot choropleth map
+ggplot(plot_nomoi) +
+  geom_sf(aes(fill = difference)) +
+  scale_fill_gradient(low = "blue", high = "red", name = "Absolute Altitude Difference") +
+  ggtitle("Choropleth Map of Absolute Altitude Difference") +
+  theme_minimal()
+
+```
+
+
+
+<h3> The top 10 states in terms of Average Elevation </h3>
+```{r}
+###5a
+#filter for top 10 states by mean_altitude
+top_10_nomoi_mean_altitude <- nomoi %>% 
+  arrange(desc(mean_altitude)) %>%  
+  head(10)  
+
+print(paste("Top 10 states by its mean altitude are:" ))
+print(top_10_nomoi_mean_altitude$NAME)
+```
+
+<h3> The top 10 states in terms of Standard Deviation of Elevation </h3>
+```{r}
+###5b
+#filter top 10 states by standard deviation
+top_10_nomoi_sd_altitude <- nomoi %>% 
+  arrange(desc(sd_altitude)) %>%  
+  head(10)  
+
+print(paste("Top 10 states by its mean altitude are:" ))
+print(top_10_nomoi_sd_altitude$NAME)
+```
+
+
+<h3> Places that are situated above 1500 meters in altitude </h3>
+
+```{r}
+###6
+places$altitude<- extract(greece_raster , places) #places altitude
+
+#filter for places with altitude>1500
+places_over_1500 <-places %>%
+  filter(altitude>1500)
+
+#initial plot of all states
+base_plot <- ggplot() +
+  geom_sf(data = nomoi[0]) 
+
+#plot by population difference
+second_plot<-base_plot+
+  #add places over 1500, colored by its population
+  geom_sf(data = places_over_1500, aes(color =population > 0))+
+  #Process the text labels to avoid overlap and ensure a visually pleasing appearance
+   geom_text_repel(
+    data = places_over_1500,
+    aes(x = st_coordinates(geometry)[, 1], y = st_coordinates(geometry)[, 2], label = name),
+    box.padding = 0.2, 
+    point.padding = 0.1,  
+    segment.color = NA,
+    segment.size = 0,
+    direction = "both",  
+    hjust = 0, vjust = 0
+  )
+
+
+plot(second_plot)
+
+```
+
+
+<h3> Reclassify Greece map </h3>
+```{r}
+###7
+rcl <- matrix(c(1, 500, 1, 500, 1000, 2, 1000, 1500, 3, 1500, 2000, 4, 2000, 2500, 5, 2500, 3000, 6), ncol = 2 , byrow = TRUE) #create reclassifies levels
+recl <- reclassify(greece_raster, rcl = rcl) #reclassify map
+plot(recl, main= "Reclassified Greece map") #plot
+
+```
+
+
+<h3>Line between Grebena-Ioannina and elevation along the line </h3>
+```{r warning=FALSE}
+###8
+grevena<-poleis %>%
+  filter(NAME == "Grebena")
+ioannina<-poleis %>%
+  filter(NAME =="Ioannina")
+
+# Extract coordinates for Grevena
+coordinates_grevena <- st_coordinates(grevena$geometry)
+x_value_grevena <- coordinates_grevena[, "X"]
+y_value_grevena <- coordinates_grevena[, "Y"]
+
+# Extract coordinates for Ioannina
+coordinates_ioannina <- st_coordinates(ioannina$geometry)
+x_value_ioannina <- coordinates_ioannina[, "X"]
+y_value_ioannina <- coordinates_ioannina[, "Y"]
+
+# Δημιουργία γραμμής που ενώνει τις δύο πόλεις
+greece_transect1 <- st_linestring(rbind(c(x_value_grevena, y_value_grevena) , c(x_value_ioannina, y_value_ioannina))) %>%
+  st_sfc(crs = st_crs(greece_raster)) |>
+  st_sf(geometry = _)
+
+
+#Geocomputation with R: 5.4.2 Raster extraction
+
+greece_transect1$id = 1:nrow(greece_transect1)
+greece_transect1 = st_segmentize(greece_transect1, dfMaxLength = 50)
+greece_transect1= st_cast(greece_transect1, "POINT")
+
+greece_transect1 = greece_transect1 |> 
+  group_by(id) |> 
+  mutate(dist = st_distance(geometry)[, 1]) 
+
+greece_transect1_elev = terra::extract(greece_raster, greece_transect1)
+greece_transect1 = cbind(greece_transect1, greece_transect1_elev)
+
+
+greece_transect1_elevation_data <- data.frame(elevation = greece_transect1_elev)
+
+par(mfrow = c(1, 2), mar = c(1, 6, 5, 2)) #2 plots, avoid overlaping between them
+
+#1
+plot(greece_raster , main= "Line extraction: Ioannina - Grebena")
+plot(greece_transect1, add = TRUE, col = "red")
+
+#2
+plot(greece_transect1_elevation_data$elevation, type = "l", col = "blue", xlab = "Distance", ylab = "Elevation", main= "Elevation along the line")
+
+par(mfrow = c(1, 1))
+
+
+```
+```{r message=FALSE, warning=FALSE}
+###8
+katerini<-poleis %>%
+  filter(NAME == "Katerini")
+lamia<-poleis %>%
+  filter(NAME =="Lamia")
+
+# Extract coordinates for Katerini
+coordinates_katerini <- st_coordinates(katerini$geometry)
+x_value_katerini <- coordinates_katerini[, "X"]
+y_value_katerini <- coordinates_katerini[, "Y"]
+
+# Extract coordinates for Lamia
+coordinates_lamia <- st_coordinates(lamia$geometry)
+x_value_lamia <- coordinates_lamia[, "X"]
+y_value_lamia <- coordinates_lamia[, "Y"]
+
+# Δημιουργία γραμμής που ενώνει τις δύο πόλεις
+greece_transect2 <- st_linestring(rbind(c(x_value_katerini, y_value_katerini) , c(x_value_lamia, y_value_lamia))) %>%
+  st_sfc(crs = st_crs(greece_raster)) |>
+  st_sf(geometry = _)
+
+
+#Geocomputation with R: 5.4.2 Raster extraction
+
+greece_transect2$id = 1:nrow(greece_transect2)
+greece_transect2 = st_segmentize(greece_transect2, dfMaxLength = 50)
+greece_transect2= st_cast(greece_transect2, "POINT")
+
+greece_transect2 = greece_transect2 |> 
+  group_by(id) |> 
+  mutate(dist = st_distance(geometry)[, 1]) 
+
+greece_transect2_elev = terra::extract(greece_raster, greece_transect2)
+greece_transect2 = cbind(greece_transect2, greece_transect2_elev)
+
+
+greece_transect2_elevation_data <- data.frame(elevation = greece_transect2_elev)
+
+par(mfrow = c(1, 2), mar = c(1, 6, 5, 2)) #2 plots, avoid overlaping between them
+
+#1
+plot(greece_raster , main= "Line extraction: Katerini - Lamia")
+plot(greece_transect2, add = TRUE, col = "red")
+
+#2
+plot(greece_transect2_elevation_data$elevation, type = "l", col = "blue", xlab = "Distance", ylab = "Elevation", main= "Elevation along the line")
+
+par(mfrow = c(1, 1))
+```
+
+
+
+
+<h3> Playgrounds in Athens and their distances from the city center </h3>
+For the creation of the plot, a shape file from the <a title="T" href="http://geodata.gov.gr/en/dataset/tt1ototto1nueves-tta1d1kes-xapes-anuou-a0nvaiwv/">link</a> was used, containing the playgrounds in the Athens region. By utilizing the st_centroid function for Central Athens, the visual representation shows the distance of these playgrounds from the city center.
+```{r message=FALSE, warning=FALSE}
+###9a
+nomos_athens <- nomoi %>%
+  filter(str_detect(NAME, "Central Athens"))
+
+paidikes_xares <- st_read("paidikes_xares_da/paidikes_xares_da.shp")
+# http://geodata.gov.gr/en/dataset/tt1ototto1nueves-tta1d1kes-xapes-anuou-a0nvaiwv
+
+
+athens_centroid <- st_centroid(nomos_athens)
+
+
+# Σχεδίαση του χάρτη
+ggplot() +
+  geom_sf(data = nomos_athens, fill = "lightblue", color = "black") +
+  geom_sf(data = paidikes_xares, fill = "red", color = "red") +
+  geom_sf(data = athens_centroid, color = "blue", size = 3) +
+  ggtitle("Playgrounds Distance to Athens Centroids")
+
+```
+
+
+
+<h3> Railroads in Greece </h3>
+Here, a shapefile containing <a title="T" href="https://www.diva-gis.org/datadown">railroads</a> of Greece was employed. By following the provided link and selecting Greece and Railroads. The first graph displays the railroads in Greece. In the subsequent graph, the states of Greece are represented with colors corresponding to the count of different railroads they have.
+```{r message=FALSE, warning=FALSE}
+###9b
+
+railroads <- st_read("GRC_rails.shp") #https://www.diva-gis.org/datadown
+
+railroads_nomoi_intersection <- st_intersection(railroads, nomoi) #intersection of which nomoi have railroads
+
+# Convert sf objects to data frames 
+railroads_df <- st_as_sf(as.data.frame(railroads))
+nomoi_df <- st_as_sf(as.data.frame(nomoi))
+railroads_nomoi_intersection_df <- st_as_sf(as.data.frame(railroads_nomoi_intersection))
+
+# Count times of nomoi that appears in Dataset interse
+nomoi_counts <- railroads_nomoi_intersection_df %>%
+  group_by(NAME) %>%
+  summarise(count = n())
+
+nomoi_counts_df <- st_drop_geometry(nomoi_counts)
+
+# Use st_join to add the counts to the nomoi_df
+nomoi_df <- left_join(nomoi_df, nomoi_counts_df, by = "NAME")
+
+
+ggplot()+
+  geom_sf(data = nomoi_df) +
+  geom_sf(data =railroads ) +
+  ggtitle("Railroads in Greece")
+```
+
+```{r}
+ggplot() +
+  geom_sf(data = nomoi_df, aes(fill = count), color = "black") +
+  scale_fill_gradient(low = "green", high = "red") +
+  ggtitle("Number of Railroads Passing Through Each State")
+```
+
+
+
+<h3> Roads of Greece </h3>
+In this section, the roads of Greece are represented using the <a title="T" href="https://www.diva-gis.org/datadown">roads link</a>. By selecting Greece and Roads in the provided link, the roads consist of linestrings and multilinestrings. Using st_length, the longest road in Greece is determined and plotted.
+```{r}
+###9c
+
+roads = st_read("GRC_roads.shp") #https://www.diva-gis.org/datadown
+
+#find roads length
+roads$length<- st_length(roads$geometry)
+#max length
+max_length_index <- which.max(roads$length)
+
+# Extract the feature with the maximum length
+max_road <- roads[max_length_index, ]
+
+#Max road in which take place only in one nomo
+
+ggplot()+
+  geom_sf(data = nomoi_df) +
+  geom_sf(data =max_road) +
+  ggtitle("Longest road")
+
+
+
+```
+
+
+As observed, consider the maximum road length, is in Athos, where we currently lack additional data from the nomoi.shp file. Therefore, we will utilize the second-longest road.
+
+```{r}
+#second maximum road
+second_max_length_index <- which.max(roads$length[-max_length_index])
+
+# Extract the feature with the second maximum length
+second_max_road <- roads[second_max_length_index, ]
+
+ggplot()+
+  geom_sf(data = nomoi_df) +
+  geom_sf(data =second_max_road) +
+  ggtitle("Second longest road ")
+
+print(second_max_road)
+
+```
+
+
+Using <b>st_intersection</b>, the states to which this road belongs are color-coded in the plot
+```{r message=FALSE, warning=FALSE}
+intersection_road_nomoi <- st_intersection(second_max_road, nomoi)
+
+selected_nomoi <- intersection_road_nomoi$NAME
+selected_nomoi_data <- nomoi %>%
+  filter(NAME %in% selected_nomoi)
+
+ggplot()+
+  geom_sf(data = nomoi_df) +
+  geom_sf(data = selected_nomoi_data, map=aes(fill = "blue")) +
+  geom_sf(data =second_max_road, map = aes(fill= "black")) +
+  ggtitle("The state in which the second longest road is located.") +
+  theme_minimal() +
+  theme(
+    legend.position = "none")
+  
+
+  
+```
+
+
+<b> Usefull links </b>
+<a title="T" href="https://bookdown.org/robinlovelace/geocompr/geometric-operations.html">Geocomputation with R</a>
